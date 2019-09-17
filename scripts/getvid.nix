@@ -1,17 +1,20 @@
-{ bash, lynx, raw, wget, wrap, writeScript, xidel }:
+{ bash, fail, jq, jsbeautifier, lynx, raw, wget, wrap, writeScript, xidel }:
 
 with rec {
-  olc = wrap {
-    name = "getvid-olc";
-    paths = [ bash wget ];
+  f5 = wrap {
+    name  = "getvid-f5";
+    paths = [ bash jsbeautifier xidel ];
     script = ''
       #!/usr/bin/env bash
-      if wget -q -O - "$1" | grep "File not found" > /dev/null
-      then
-        exit 1
-      fi
-      echo "$1"
-      exit 0
+      set -e
+      wget -q -O- "$1"                                                  |
+        xidel -q - -e '//script[contains(text(),"p,a,c,k,e,d")]/text()' |
+        js-beautify -                                                   |
+        grep -v '\.srt"'                                                |
+        grep -o 'file: *"[^"]*'                                         |
+        grep -o '".*'                                                   |
+        tr -d '"'                                                       |
+        head -n1
     '';
   };
 
@@ -91,7 +94,7 @@ wrap {
   name  = "getvid";
   paths = [ bash xidel ];
   vars  = {
-    inherit olc sv voza vse;
+    inherit f5 sv voza vse;
     list = raw."listepurls.sh";
     msg  = ''
       Usage: getvid <listing url>
@@ -102,7 +105,7 @@ wrap {
       provider is written to stdout. Set DEBUG=1 to see each handler running.
 
       Known handlers (e.g. for running standalone) are:
-        ${olc}
+        ${f5}
         ${sv}
         ${voza}
         ${vse}
@@ -131,6 +134,26 @@ wrap {
 
     echo "LINKS: $LINKS" 1>&2
 
+    function tryScrape {
+         LINK="$1"
+          TIT="$2"
+        REGEX="$3"
+      SCRAPER="$4"
+          CMD="$5"
+
+      echo "$LINK" | grep "$REGEX" > /dev/null || return 1
+
+      [[ -n "$DEBUG" ]] && echo "Running $SCRAPER on $LINK" 1>&2
+      URL=$("$SCRAPER" "$LINK") || return 0
+
+      [[ -n "$URL" ]] || return 0
+      URL=$(echo "$URL" | esc)
+
+      [[ "x$CMD" = "xwget"    ]] && echo "wget -c -O '$TIT' '$URL'"
+      [[ "x$CMD" = "xyoutube" ]] && echo "youtube-dl --output '$TIT' '$URL'"
+      return 0
+    }
+
     echo "$LINKS" | while read -r PAIR
     do
       LINK=$(echo "$PAIR" | cut -f2)
@@ -142,65 +165,18 @@ wrap {
       URL=""
 
       [[ -n "$DEBUG" ]] && echo "Checking $LINK" 1>&2
-      if echo "$LINK" | grep '/op.....d\.co' > /dev/null
-      then
-        # shellcheck disable=SC2154
-        [[ -n "$DEBUG" ]] && echo "Running $olc on $LINK" 1>&2
 
-        # shellcheck disable=SC2154
-        URL=$("$olc" "$LINK") || continue
+      # shellcheck disable=SC2154
+      tryScrape "$LINK" "$TITLE" 'x5[4-6][4-6]\.c' "$f5"   'wget'    && continue
 
-        [[ -n "$URL" ]] || continue
-        URL=$(echo "$URL" | esc)
+      # shellcheck disable=SC2154
+      tryScrape "$LINK" "$TITLE" '/spe....d\.co'   "$sv"   'youtube' && continue
 
-        echo "wget -c -O '$TITLE' '$URL'"
-        continue
-      fi
+      # shellcheck disable=SC2154
+      tryScrape "$LINK" "$TITLE" '/vi..z.\.net/'   "$voza" 'wget'    && continue
 
-      if echo "$LINK" | grep '/spe....d\.co' > /dev/null
-      then
-        # shellcheck disable=SC2154
-        [[ -n "$DEBUG" ]] && echo "Running $sv on $LINK" 1>&2
-
-        # shellcheck disable=SC2154
-        URL=$("$sv" "$LINK") || continue
-
-        [[ -n "$URL" ]] || continue
-        URL=$(echo "$URL" | esc)
-
-        echo "youtube-dl --output '$TITLE' '$URL'"
-        continue
-      fi
-
-      if echo "$LINK" | grep '/vi..z.\.net/' > /dev/null
-      then
-        # shellcheck disable=SC2154
-        [[ -n "$DEBUG" ]] && echo "Running $voza on $LINK" 1>&2
-
-        # shellcheck disable=SC2154
-        URL=$("$voza" "$LINK") || continue
-
-        [[ -n "$URL" ]] || continue
-        URL=$(echo "$URL" | esc)
-
-        echo "wget -c -O '$TITLE' '$URL'"
-        continue
-      fi
-
-      if echo "$LINK" | grep '/vs...e\.e' > /dev/null
-      then
-        # shellcheck disable=SC2154
-        [[ -n "$DEBUG" ]] && echo "Running $vse on $LINK" 1>&2
-
-        # shellcheck disable=SC2154
-        URL=$("$vse" "$LINK") || true
-
-        [[ -n "$URL" ]] || continue
-        URL=$(echo "$URL" | esc)
-
-        echo "wget -c -O '$TITLE' '$URL'"
-        continue
-      fi
+      # shellcheck disable=SC2154
+      tryScrape "$LINK" "$TITLE" '/vs...e\.e'      "$vse"  'wget'    && continue
     done
   '';
 }

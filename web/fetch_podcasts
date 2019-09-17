@@ -7,12 +7,6 @@ function norm {
     tr '[:upper:]' '[:lower:]' | tr -dc '[:alnum:]'
 }
 
-function markAsRead {
-    FULL=$(readlink -f "$1")
-    emacsclient --eval "(mu4e~proc-view-path \"$FULL\")"
-    sleep 1
-}
-
 POSSIBILITIES=""
 for POSSIBLE in ~/Audio/Non-fiction/*
 do
@@ -75,8 +69,8 @@ do
 
         mkdir -p "$HOME/Audio/TODO/$GUESSTINATION"
         inDir "$HOME/Audio/TODO/$GUESSTINATION" get_bbc_podcast "$URL"
-        #mv "$F" "$(dirname "$DIR")/cur/"
-        markAsRead "$F"
+
+        markRead "$F"
     done
 done
 echo "Done with BBC podcasts" 1>&2
@@ -99,17 +93,23 @@ function getFromSrc {
         PAGE=$(grep -o 'http[s]*://[^ "]*' < "$F" | head -n1) || continue
         echo "Found link $PAGE" 1>&2
 
-        URL=$(wget -q -O- "$PAGE")
+        if echo "$PAGE" | grep -i '\.mp3$' > /dev/null
+        then
+            echo "Assuming URL '$PAGE' is the file rather than a Web page" 1>&2
+            URL="$PAGE"
+        else
+            URL=$(wget -q -O- "$PAGE")
 
-        # Narrow down the page source to a URL using the remaining arguments as
-        # patterns for 'grep -o', applied one after the other (then apply head)
-        FOUND=1
-        for PAT in "$@"
-        do
-            URL=$(echo "$URL" | grep -o "$PAT") || FOUND=0
-        done
-        [[ "$FOUND" -eq 1 ]] || continue
-        URL=$(echo "$URL" | head -n1)
+            # Narrow down the page source to a URL using the remaining arguments as
+            # patterns for 'grep -o', applied one after the other (then apply head)
+            FOUND=1
+            for PAT in "$@"
+            do
+                URL=$(echo "$URL" | grep -o "$PAT") || FOUND=0
+            done
+            [[ "$FOUND" -eq 1 ]] || continue
+            URL=$(echo "$URL" | head -n1)
+        fi
 
         # Skip if we didn't get anything (e.g. not a podcast)
         [[ -n "$URL" ]] || continue
@@ -124,18 +124,28 @@ function getFromSrc {
 
           # Fetch the extracted file; use -c to resume previous attempts
           wget -c "$URL"
+
+          # Remove any extra suffices from the file name (might as well do all)
+          for GOT in *.mp3*
+          do
+              NAME=$(basename "$GOT")
+
+              # Skip those which are already .mp3
+              echo "$NAME" | grep -i '\.mp3$' > /dev/null && continue
+
+              TRIMMED=$(echo "$NAME" | grep -o '^.*\.mp3')
+
+              echo "Renaming dodgy-looking '$NAME' to '$TRIMMED'" 1>&2
+              mv -v "$NAME" "$TRIMMED"
+          done
         popd
 
-        # Try to mark as read; this seems to work, but needs mu4e open
-        #mv -v "$F" "$HOME/Mail/feeds/$IN/cur/"
-        markAsRead "$F"
+        markRead "$F"
     done
 }
 
-getFromSrc "FunctionalGeekery"  "Functional Geekery" 'http[s]*://[^" ]*\.mp3'
-
-getFromSrc "FlyingColoursMaths" "Wrong But Useful"   'href="http[^"]*\.mp3"' \
-                                                     'http.*mp3'
-
-getFromSrc "CoRecursivePodcast" "Corecursive"        '"http[^"]*\.mp3"' \
-                                                     'http.*\.mp3'
+# Read each line into the array ENTRY, with tab-separated elements
+while IFS=$'\t' read -r -a ENTRY
+do
+    getFromSrc "${ENTRY[@]}"
+done < <(grep -v '^ *#' < ~/.podcast_extractors)

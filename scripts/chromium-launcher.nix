@@ -1,14 +1,17 @@
-{ bash, fetchurl, in-chromium-env, proot, runCommand, wrap, writeScript }:
+{ bash, fetchurl, proot, runCommand, scripts, wrap, writeScript }:
 
 wrap {
   name   = "chromium-launcher";
   paths  = [ bash proot ];
   vars   = {
-    ce       = in-chromium-env;
-    launcher = writeScript "chrome-launcher.sh" ''
-      #!/usr/bin/env bash
-      chromium --disable-namespace-sandbox --no-sandbox "$@"
-    '';
+    ce       = scripts.in-chromium-env;
+    launcher = wrap {
+      name   = "chrome-launcher.sh";
+      script = ''
+        #!/usr/bin/env bash
+        chromium --disable-namespace-sandbox --no-sandbox "$@"
+      '';
+    };
   };
   script = ''
     #!/usr/bin/env bash

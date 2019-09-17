@@ -1,14 +1,14 @@
-{ bashInteractive, expect, fold-unbuffered, nix-helpers, python, raw, runCommand,
-  utillinux, withDeps, wrap }:
+{ bashInteractive, expect, fail, python, raw, runCommand, scripts, utillinux,
+  withDeps, wrap }:
 
 with builtins;
 with rec {
   go = wrap {
     name  = "wrappedShell";
     file  = raw.wrappedShell;
-    paths = [ bashInteractive expect nix-helpers.fail ];
+    paths = [ bashInteractive expect fail ];
     vars  = {
-      fold          = fold-unbuffered;
+      fold          = scripts.fold-unbuffered;
       wrappedExpect = raw."wrappedShell.expect";
     };
   };
@@ -16,7 +16,7 @@ with rec {
   check = name: script: runCommand "wrappedShell-${name}"
     {
       inherit go script;
-      buildInputs = [ expect nix-helpers.fail ];
+      buildInputs = [ expect fail ];
     }
     ''
       ln -s "$go" ./go

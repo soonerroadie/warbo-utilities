@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+# Useful alternative to 'mv' when going between different filesystems (i.e. when
+# we need to copy then delete, rather than just rename). Copies with progress
+# bar and resumes partial copies, then deletes the source iff successful.
+
+FROM="$1"
+DEST="$2"
+
+[[ -n "$FROM" ]] || fail "Need first argument to be source path"
+[[ -e "$FROM" ]] || fail "First argument '$FROM' doesn't exist"
+[[ -n "$DEST" ]] || fail "No destination given"
+
+copy "$FROM" "$DEST" && rm -rfv "$FROM"

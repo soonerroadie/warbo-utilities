@@ -1,10 +1,10 @@
 { bash, coreutils, feed2maildirsimple, libxslt, mkBin, mu-standalone, openssl,
-  procps, python, raw, sysPing, wget, wrap, writeScript, xmlstarlet }:
+  procps, python2, raw, scripts, wget, wrap, writeScript, xidel, xmlstarlet }:
 
 with rec {
   cleanUp = wrap {
     name   = "clean-up-news";
-    paths  = [ bash mu-standalone ];
+    paths  = [ bash mu-standalone xidel ];
     script = ''
       #!/usr/bin/env bash
 
@@ -12,7 +12,7 @@ with rec {
         while ps auxww | grep 'mu server' | grep -v grep | grep 'server'
         do
           pkill -2 -u "$UID" -f 'mu server'
-          sleep 2
+          sleep 1
         done
       }
 
@@ -24,7 +24,7 @@ with rec {
 
       # Some feeds are high-volume and only interesting for a short time. We
       # clean up their articles 1 month after posting
-      for FEED in BBCHeadlines HackerNews XKCD SMBC ScottishTech kurzweilai
+      for FEED in BBCHeadlines HackerNews XKCD SMBC
       do
         CUTOFF=$(date -d "last month" "+%s")
         while read -r F
@@ -52,7 +52,7 @@ with rec {
 
       # Limit Reddit feeds to 100 messages. They only include about the latest
       # 25 posts, so we shouldn't get any dupes creeping in.
-      for FEED in RedditHaskell RedditStallmanWasRight Intercept \
+      for FEED in RedditHaskell RedditStallmanWasRight \
                   ScienceBulletin BBCHeadlines HackerNews
       do
         while read -r F
@@ -67,8 +67,109 @@ with rec {
       # Delete old BBC news content (since their RSS only has summaries)
       find /tmp/bbcnews-cached -type f -mtime +30 -exec rm {} \;
 
+      # Delete MeetUp events from the past. These may be posted well in advance,
+      # so we can't use the file's modification time.
+      for F in "$HOME/.cache/meetup"/*
+      do
+        if ! [[ -s "$F" ]]
+        then
+          # Delete empty files
+          rm -f "$F"
+          continue
+        fi
+
+        MILLIS=$(xidel - -q -e '//time/@dateTime' < "$F" | head -n1)
+        if [[ -z "$MILLIS" ]]
+        then
+          # Delete undated events
+          rm -f "$F"
+          continue
+        fi
+
+        SECS=$(( MILLIS / 1000 ))
+        PAST=$(date -d 'now - 7 days' '+%s')
+        (( PAST < SECS )) || rm -f "$F"
+        unset MILLIS
+        unset SECS
+        unset PAST
+      done
+
       stopMu
-      mu index --maildir="$HOME/Mail"
+      mu index --maildir="$HOME/Mail" --lazy-check
+    '';
+  };
+
+  convert = wrap {
+    name   = "feeds2maildirs";
+    paths  = [ (python2.withPackages (p: [ feed2maildirsimple ])) ];
+    script = ''
+      #!/usr/bin/env python
+      # coding: utf-8
+
+      import hashlib
+      import os
+      import random
+      import sys
+
+      from feed2maildir.converter import Converter
+      from feed2maildir.reader    import Reader
+
+      msg = lambda x: (sys.stderr.write(x if type(x) == type("") \
+                                          else repr(x) + '\n'),
+                       sys.stderr.flush(),
+                       None)[-1]
+
+      home     = os.environ['HOME']
+      rssDir   = home + '/.cache/rss'
+      rssFiles = [f for f in os.listdir(rssDir) if f.lower().endswith('.rss')]
+
+      for rssFile in rssFiles:
+        name    = rssFile[:-4]
+        maildir = home + '/Mail/feeds/' + name
+
+        try:
+          with open(rssDir + '/' + rssFile, 'r') as f:
+            data = f.read()
+        except Exception as e:
+          msg({
+            'exception' : e,
+            'message'   : 'Failed to read file, skipping',
+            'rssFile'   : rssFile,
+          })
+          continue
+
+        # Hash the .rss file to a .hash file and see if it's changed
+        hashFile = rssDir + '/' + name + '.hash'
+        lastHash = None
+        try:
+          with open(hashFile, 'r') as f:
+            lastHash = f.read().strip()
+        except:
+          pass
+
+        hasher = hashlib.md5()
+        hasher.update(data)
+        newHash = hasher.hexdigest()
+
+        # Skip most unchanged files; do a few at random to escape erroneous data
+        if lastHash == newHash and random.randint(0, len(rssFiles)) > 5:
+          msg('Skipping ' + rssFile + ' since its hash has not changed')
+          continue
+
+        msg('Converting ' + rssFile + ' to Maildir\n')
+        try:
+          reader    = Reader(data)
+          converter = Converter(maildir, name, strip=True)
+          converter.load(reader.feed)
+          converter.run()
+          with open(hashFile, 'w') as f:
+            f.write(newHash)
+        except Exception as e:
+          msg({
+            'exception' : e,
+            'message'   : 'Skipping file due to exception in conversion',
+            'rssFile'   : rssFile,
+          })
     '';
   };
 
@@ -93,29 +194,19 @@ with rec {
         xmlstarlet ed                              \
           -s //item -t elem -n pubDate             \
           -v "$(date -d "today 00:00" --rfc-2822)" \
-          -d '//item/pubDate[position() != 1]'
-    '';
-  };
+          -d '//item/pubDate[position() != 1]'     |
 
-  courier = mkBin {
-    name   = "courier";
-    paths  = [ bash getRss ];
-    script = ''
-      #!/usr/bin/env bash
+        # Append an empty description, then remove all but the first description
+        xmlstarlet ed                              \
+          -s //item -t elem -n description         \
+          -v "No description given"                \
+          -d '//item/description[position() != 1]' |
 
-      # Scrape the Dundee Courier
-      # Edit URL http://feed43.com/feed.html?name=dundee_courier
-      COURIER="DundeeCourier.rss"
-      if [[ -e "$COURIER" ]]
-      then
-        # Feed43 don't like polling more than every 6 hours
-        if test "$(find "$COURIER" -mmin +360)"
-        then
-          getRss "DundeeCourier" "http://feed43.com/dundee_courier.xml"
-        fi
-      else
-        getRss "DundeeCourier" "http://feed43.com/dundee_courier.xml"
-      fi
+        # Append an empty link, then remove all but the first link
+        xmlstarlet ed                       \
+          -s //item -t elem -n link         \
+          -v "http://example.com"           \
+          -d '//item/link[position() != 1]'
     '';
   };
 
@@ -199,8 +290,8 @@ with rec {
 
 wrap {
   name   = "get-news-start";
-  paths  = [ bash courier mu-standalone procps python feed2maildirsimple ];
-  vars   = { inherit cleanUp rss sysPing; };
+  paths  = [ bash mu-standalone procps ];
+  vars   = { inherit cleanUp convert rss; inherit (scripts) sysPing; };
   script = ''
     #!/usr/bin/env bash
     set -e
@@ -217,21 +308,31 @@ wrap {
       bbcnews > BBCHeadlines.rss ||
         echo "Error getting BBC news, skipping" 1>&2
 
-      courier ||
-        echo "Error scraping Dundee Courier, skipping" 1>&2
+      # Our MeetUp scraper performs a query each time, so limit how often it
+      # runs (it does cache event details)
+      ACCEPTABLE_MEETUP=$(date -d 'now - 4 hours' '+%s')
+      if [[ -e meetup.rss ]]
+      then
+        LAST_MEETUP=$(date -r meetup.rss '+%s')
+      else
+        LAST_MEETUP=0
+      fi
+
+      if (( LAST_MEETUP <= ACCEPTABLE_MEETUP ))
+      then
+        getmeetup > meetup.rss ||
+          echo "Error getting meetup events" 1>&2
+      fi
 
       # shellcheck disable=SC2154
       "$rss" ~/.cache/rss < ~/.feeds
+
+      get_dodgy_feeds ~/.cache/rss
     fi
 
-    echo "Converting RSS to maildir" 1>&2
-    for F in ~/.cache/rss/*.rss
-    do
-      NAME=$(basename "$F" .rss)
-      echo "$NAME" 1>&2
-      feed2maildir -s -m ~/Mail/feeds/"$NAME" -n "$NAME" < "$F" ||
-        echo "Failed to convert $NAME, skipping" 1>&2
-    done
+    # Now convert out RSS to MailDir
+    # shellcheck disable=SC2154
+    "$convert"
 
     echo "Cleaning up old news" 1>&2
     # shellcheck disable=SC2154
@@ -239,7 +340,7 @@ wrap {
 
     # Re-index (after stopping any existing instance, e.g. the server for mu4e)
     pkill -2 -u "$UID" mu
-    sleep 2
-    mu index --maildir="$HOME/Mail"
+    sleep 1
+    mu index --maildir="$HOME/Mail" --lazy-check
   '';
 }
